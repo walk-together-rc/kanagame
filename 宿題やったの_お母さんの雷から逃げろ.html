@@ -1,0 +1,1755 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no">
+<title>宿題やったの？！お母さんの雷から逃げろ！</title>
+<style>
+* { margin: 0; padding: 0; box-sizing: border-box; }
+body {
+  background: #1a0a2e;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  min-height: 100vh;
+  font-family: 'Arial', sans-serif;
+  overflow: hidden;
+  touch-action: none;
+  user-select: none;
+}
+#gameContainer {
+  position: relative;
+  width: 100%;
+  max-width: 400px;
+}
+canvas {
+  display: block;
+  width: 100%;
+  height: auto;
+  border-radius: 10px;
+  box-shadow: 0 0 40px rgba(255, 100, 0, 0.5), 0 0 80px rgba(255, 100, 0, 0.2);
+}
+#skill-btn {
+  position: absolute;
+  bottom: 20px;
+  right: 15px;
+  width: 72px;
+  height: 72px;
+  border-radius: 50%;
+  background: linear-gradient(135deg, #f39c12, #e74c3c);
+  border: 3px solid #fff;
+  color: white;
+  font-size: 11px;
+  font-weight: bold;
+  text-align: center;
+  display: none;
+  align-items: center;
+  justify-content: center;
+  cursor: pointer;
+  box-shadow: 0 4px 20px rgba(0,0,0,0.6);
+  flex-direction: column;
+  line-height: 1.3;
+}
+#skill-btn.ready {
+  background: linear-gradient(135deg, #00c853, #00897b);
+  box-shadow: 0 0 20px rgba(0, 200, 83, 0.6);
+  animation: pulse 1s infinite alternate;
+}
+@keyframes pulse {
+  from { transform: scale(1); }
+  to   { transform: scale(1.08); }
+}
+</style>
+</head>
+<body>
+<div id="gameContainer">
+  <canvas id="gameCanvas"></canvas>
+  <div id="skill-btn">言い訳<br>スキル<br>🌟</div>
+</div>
+
+<script>
+// =====================================================
+//  宿題やったの？！お母さんの雷から逃げろ！
+//  Single-file HTML5 Canvas Game
+//  PC: WASD / 矢印キー | Mobile: Virtual Joystick
+// =====================================================
+
+// === Canvas Setup ===
+const canvas = document.getElementById('gameCanvas');
+const ctx = canvas.getContext('2d');
+const GW = 360;  // Game width
+const GH = 640;  // Game height
+canvas.width  = GW;
+canvas.height = GH;
+
+// === Offscreen canvas for static background (grid) ===
+const bgCanvas = document.createElement('canvas');
+bgCanvas.width  = GW;
+bgCanvas.height = GH;
+const bgCtx = bgCanvas.getContext('2d');
+
+// Pre-bake static background gradient + grid
+function bakeBg() {
+  const bg = bgCtx.createLinearGradient(0, 0, 0, GH);
+  bg.addColorStop(0,   '#87CEEB');
+  bg.addColorStop(0.55,'#B0E0B0');
+  bg.addColorStop(1,   '#8FBC8F');
+  bgCtx.fillStyle = bg;
+  bgCtx.fillRect(0, 0, GW, GH);
+  bgCtx.strokeStyle = 'rgba(0,0,0,0.05)';
+  bgCtx.lineWidth = 1;
+  for (let x = 0; x <= GW; x += 40) { bgCtx.beginPath(); bgCtx.moveTo(x, 0); bgCtx.lineTo(x, GH); bgCtx.stroke(); }
+  for (let y = 0; y <= GH; y += 40) { bgCtx.beginPath(); bgCtx.moveTo(0, y); bgCtx.lineTo(GW, y); bgCtx.stroke(); }
+}
+bakeBg();
+
+// =====================================================
+//  PERSISTENT DATA (localStorage)
+// =====================================================
+let totalCoins = parseInt(localStorage.getItem('shukudai_totalCoins') || '0');
+let purchasedItems = JSON.parse(localStorage.getItem('shukudai_items') || JSON.stringify({
+  sword: 0,       // 0=なし, 1=剣(1秒KB), 2=強い剣(5秒KB)
+  extraLives: 0,  // 追加ライフ数（累積、最大5）
+  shoes: false,   // 俊足の靴（速度×1.5）
+  brain: false    // めっちゃ賢い頭（剣強化＋速度UP）
+}));
+
+function savePersistentData() {
+  localStorage.setItem('shukudai_totalCoins', totalCoins.toString());
+  localStorage.setItem('shukudai_items', JSON.stringify(purchasedItems));
+}
+
+// === Shop Items Definition ===
+const SHOP_ITEMS = [
+  { id: 'sword',       name: '剣',              emoji: '🗡️',  price: 150,  desc: '敵に当たった時1秒ノックバック！' },
+  { id: 'strongSword', name: '強い剣',           emoji: '⚔️',  price: 300,  desc: '敵に当たった時5秒ノックバック！' },
+  { id: 'life1',       name: 'ライフ+1',         emoji: '❤️',  price: 500,  desc: 'ゲーム開始時のライフが1増える' },
+  { id: 'life2',       name: 'ライフ+2',         emoji: '💖',  price: 700,  desc: 'ゲーム開始時のライフが2増える' },
+  { id: 'shoes',       name: '俊足の靴',          emoji: '👟',  price: 1000, desc: '移動速度が1.5倍になる！' },
+  { id: 'brain',       name: 'めっちゃ賢い頭',    emoji: '🧠',  price: 3000, desc: '剣強化＋速度UP！最強装備！' },
+];
+
+function canBuyItem(id) {
+  const item = SHOP_ITEMS.find(i => i.id === id);
+  if (!item || totalCoins < item.price) return false;
+  switch(id) {
+    case 'sword':       return purchasedItems.sword < 1 && !purchasedItems.brain;
+    case 'strongSword': return purchasedItems.sword < 2 && !purchasedItems.brain;
+    case 'life1':       return purchasedItems.extraLives < 5;
+    case 'life2':       return purchasedItems.extraLives < 5;
+    case 'shoes':       return !purchasedItems.shoes && !purchasedItems.brain;
+    case 'brain':       return !purchasedItems.brain;
+    default: return false;
+  }
+}
+
+function isItemOwned(id) {
+  switch(id) {
+    case 'sword':       return purchasedItems.sword >= 1 || purchasedItems.brain;
+    case 'strongSword': return purchasedItems.sword >= 2 || purchasedItems.brain;
+    case 'life1':       return purchasedItems.extraLives >= 5;
+    case 'life2':       return purchasedItems.extraLives >= 4;
+    case 'shoes':       return purchasedItems.shoes || purchasedItems.brain;
+    case 'brain':       return purchasedItems.brain;
+    default: return false;
+  }
+}
+
+function buyItem(id) {
+  if (!canBuyItem(id)) return;
+  const item = SHOP_ITEMS.find(i => i.id === id);
+  totalCoins -= item.price;
+  switch(id) {
+    case 'sword':       purchasedItems.sword = 1; break;
+    case 'strongSword': purchasedItems.sword = 2; break;
+    case 'life1':       purchasedItems.extraLives = Math.min(purchasedItems.extraLives + 1, 5); break;
+    case 'life2':       purchasedItems.extraLives = Math.min(purchasedItems.extraLives + 2, 5); break;
+    case 'shoes':       purchasedItems.shoes = true; break;
+    case 'brain':       purchasedItems.brain = true; break;
+  }
+  savePersistentData();
+}
+
+// === Game States ===
+const STATE = { START: 0, PLAYING: 1, GAMEOVER: 2, WIN: 3, SHOP: 4 };
+let gameState = STATE.START;
+
+// === Mode & Difficulty ===
+const MODE = { SURVIVAL: 'survival', COLLECTION: 'collection' };
+let selectedMode = MODE.SURVIVAL;
+let difficulty   = 'normal';
+
+// Difficulty config
+const DIFF = {
+  easy:   { lives: 5, attackInterval: 420, obstacleCount: 3, obstSpeed: 1.0, spawnInterval: 360 },
+  normal: { lives: 3, attackInterval: 300, obstacleCount: 5, obstSpeed: 1.5, spawnInterval: 280 },
+  hard:   { lives: 1, attackInterval: 180, obstacleCount: 8, obstSpeed: 2.2, spawnInterval: 200 }
+};
+
+// === Game Variables ===
+let player, obstacles, items, lightnings, particles, floatTexts;
+let lives, score, timeLeft, itemsCollected;
+let skillCooldown, skillEffect;
+let swordCooldown;         // 剣のノックバッククールダウン
+let sessionEarnedCoins;    // このゲームで稼いだコイン
+let enemyAngle, enemyAttackTimer, enemyChaseTimer, enemyMode;
+let screenShake, flashAlpha, flashColor;
+let frameCount;
+let animId;
+let isMobile;
+
+// === Input State ===
+const keys = {};
+let joystick = { active: false, startX: 0, startY: 0, baseX: 0, baseY: 0, dx: 0, dy: 0, id: null };
+let mousePos = { x: -999, y: -999 };
+
+// === Cached DOM references ===
+const skillBtn = document.getElementById('skill-btn');
+
+// === Audio ===
+let audioCtx = null;
+function initAudio() {
+  try { audioCtx = new (window.AudioContext || window.webkitAudioContext)(); } catch(e) {}
+}
+function playTone(freq1, freq2, type, vol, duration) {
+  if (!audioCtx) return;
+  const o = audioCtx.createOscillator();
+  const g = audioCtx.createGain();
+  o.connect(g); g.connect(audioCtx.destination);
+  const t = audioCtx.currentTime;
+  o.type = type;
+  o.frequency.setValueAtTime(freq1, t);
+  if (freq2) o.frequency.exponentialRampToValueAtTime(freq2, t + duration * 0.8);
+  g.gain.setValueAtTime(vol, t);
+  g.gain.exponentialRampToValueAtTime(0.001, t + duration);
+  o.start(t); o.stop(t + duration);
+}
+const SFX = {
+  coin:    () => playTone(880, 1320, 'sine',     0.15, 0.18),
+  hit:     () => playTone(300,  60, 'sawtooth',  0.25, 0.3),
+  thunder: () => { playTone(120, 20, 'square',   0.4,  0.35); playTone(80,  10, 'sawtooth', 0.3, 0.4); },
+  skill:   () => playTone(440, 880, 'sine',      0.2,  0.3),
+  sword:   () => playTone(660, 440, 'triangle',  0.2,  0.15),
+  meat:    () => playTone(330, 550, 'sine',      0.15, 0.25),
+  buy:     () => { playTone(523, 784, 'sine',    0.15, 0.1); setTimeout(() => playTone(784, 1047, 'sine', 0.15, 0.12), 100); },
+  win:     () => { playTone(523, 784, 'sine',    0.2,  0.15); setTimeout(() => playTone(659, 1047, 'sine', 0.2, 0.2), 150); },
+  lose:    () => playTone(220, 55, 'sawtooth',   0.3,  0.6)
+};
+
+// === Utility ===
+const rand    = (a, b) => Math.random() * (b - a) + a;
+const randInt = (a, b) => Math.floor(rand(a, b + 1));
+const dist    = (a, b) => Math.hypot(a.x - b.x, a.y - b.y);
+const clamp   = (v, lo, hi) => Math.max(lo, Math.min(hi, v));
+const lerp    = (a, b, t) => a + (b - a) * t;
+
+// Rounded rect helper
+function rRect(x, y, w, h, r, fill, stroke) {
+  ctx.beginPath();
+  ctx.moveTo(x + r, y);
+  ctx.lineTo(x + w - r, y);
+  ctx.quadraticCurveTo(x + w, y, x + w, y + r);
+  ctx.lineTo(x + w, y + h - r);
+  ctx.quadraticCurveTo(x + w, y + h, x + w - r, y + h);
+  ctx.lineTo(x + r, y + h);
+  ctx.quadraticCurveTo(x, y + h, x, y + h - r);
+  ctx.lineTo(x, y + r);
+  ctx.quadraticCurveTo(x, y, x + r, y);
+  ctx.closePath();
+  if (fill)   ctx.fill();
+  if (stroke) ctx.stroke();
+}
+
+// === Factory: Player ===
+function mkPlayer() {
+  return {
+    x: GW / 2, y: GH / 2,
+    r: 18,
+    speed: 3.5,
+    facing: 1,
+    animFrame: 0, animTimer: 0,
+    invincible: 0,
+    speedBoost: 0,
+    blinkTimer: 0
+  };
+}
+
+// === Factory: Obstacle ===
+function mkObstacle(tracking = false) {
+  const edge = randInt(0, 3);
+  let x, y;
+  if      (edge === 0) { x = rand(0, GW); y = -30; }
+  else if (edge === 1) { x = GW + 30;    y = rand(0, GH); }
+  else if (edge === 2) { x = rand(0, GW); y = GH + 30; }
+  else                 { x = -30;         y = rand(0, GH); }
+
+  const spd   = DIFF[difficulty].obstSpeed * rand(0.7, 1.4);
+  const angle = Math.atan2(GH / 2 - y, GW / 2 - x);
+  return {
+    x, y,
+    r: rand(15, 26),
+    vx: Math.cos(angle) * spd,
+    vy: Math.sin(angle) * spd,
+    tracking,
+    speed: spd,
+    wobble: rand(0, Math.PI * 2),
+    wobbleSpeed: rand(0.02, 0.07),
+    emoji: tracking ? '😤' : (Math.random() < 0.5 ? '🌀' : '💢')
+  };
+}
+
+// === Factory: Item ===
+function mkItem(type) {
+  return {
+    x: rand(35, GW - 35),
+    y: rand(90, GH - 40),
+    r: 16,
+    type,
+    bob: rand(0, Math.PI * 2),
+    done: false
+  };
+}
+
+// === Factory: Lightning Warning ===
+function mkLightning(x, y) {
+  return {
+    x: clamp(x, 30, GW - 30),
+    y: clamp(y, 90, GH - 30),
+    r: 28,
+    warn: 110,
+    active: 0
+  };
+}
+
+// === Factory: Particle ===
+function mkParticle(x, y, col, vx, vy, life, size) {
+  return { x, y, col, vx, vy, life, maxLife: life, r: size || rand(2, 6) };
+}
+
+// === Factory: Floating Text ===
+function mkFloat(x, y, text, col, size) {
+  return { x, y, text, col, size: size || 14, life: 65, vy: -1.4 };
+}
+
+// === Burst Helpers ===
+const MAX_PARTICLES = 120;
+function burst(x, y, col, count, speedMin, speedMax) {
+  const room = MAX_PARTICLES - particles.length;
+  if (room <= 0) return;
+  const add = Math.min(count, room);
+  for (let i = 0; i < add; i++) {
+    const a = rand(0, Math.PI * 2);
+    const s = rand(speedMin, speedMax);
+    particles.push(mkParticle(x, y, col, Math.cos(a) * s, Math.sin(a) * s, rand(25, 50)));
+  }
+}
+
+// =====================================================
+//  INIT
+// =====================================================
+function initGame() {
+  const cfg = DIFF[difficulty];
+  player = mkPlayer();
+
+  obstacles = [];
+  for (let i = 0; i < cfg.obstacleCount; i++) {
+    obstacles.push(mkObstacle(i < 2));
+  }
+
+  items = [];
+  for (let i = 0; i < 5; i++) items.push(mkItem(Math.random() < 0.7 ? 'coin' : 'meat'));
+
+  lightnings  = [];
+  particles   = [];
+  floatTexts  = [];
+
+  // extraLivesを追加したライフ数
+  lives          = cfg.lives + purchasedItems.extraLives;
+  score          = 0;
+  itemsCollected = 0;
+  sessionEarnedCoins = 0;
+  timeLeft       = selectedMode === MODE.SURVIVAL ? 60 : 120;
+
+  skillCooldown = 0;
+  skillEffect   = null;
+  swordCooldown = 0;
+
+  enemyAngle       = 0;
+  enemyAttackTimer = cfg.attackInterval;
+  enemyChaseTimer  = 0;
+  enemyMode        = 'normal';
+
+  screenShake = 0;
+  flashAlpha  = 0;
+  flashColor  = 'rgba(255,50,50,';
+  frameCount  = 0;
+
+  joystick = { active: false, startX: 0, startY: 0, baseX: 0, baseY: 0, dx: 0, dy: 0, id: null };
+}
+
+// =====================================================
+//  UPDATE
+// =====================================================
+function update() {
+  frameCount++;
+
+  // Decay effects
+  if (screenShake > 0) screenShake *= 0.82;
+  if (flashAlpha  > 0) flashAlpha  -= 0.06;
+
+  // Game timer
+  if (frameCount % 60 === 0) {
+    timeLeft--;
+    if (timeLeft <= 0) {
+      endGame(selectedMode === MODE.SURVIVAL);
+      return;
+    }
+  }
+
+  // Skill cooldown
+  if (skillCooldown > 0) skillCooldown--;
+
+  // Sword cooldown
+  if (swordCooldown > 0) swordCooldown--;
+
+  // Skill effect
+  if (skillEffect) {
+    skillEffect.timer--;
+    if (skillEffect.timer <= 0) skillEffect = null;
+  }
+
+  updatePlayer();
+  updateEnemy();
+  updateObstacles();
+  updateItems();
+  updateLightnings();
+  updateParticles();
+  updateFloatTexts();
+
+  const cfg = DIFF[difficulty];
+  if (frameCount % cfg.spawnInterval === 0 && obstacles.length < cfg.obstacleCount + 4) {
+    obstacles.push(mkObstacle(Math.random() < 0.3));
+  }
+  if (obstacles.length > 18) obstacles.splice(0, obstacles.length - 18);
+  if (frameCount % 260 === 0 && items.length < 9) {
+    items.push(mkItem(Math.random() < 0.65 ? 'coin' : 'meat'));
+  }
+}
+
+function updatePlayer() {
+  // 靴・脳みそ装備で速度1.5倍
+  const shoesActive = purchasedItems.shoes || purchasedItems.brain;
+  let spd = player.speed * (shoesActive ? 1.5 : 1.0);
+  if (player.speedBoost > 0) { spd *= 1.65; player.speedBoost--; }
+
+  let mx = 0, my = 0;
+
+  if (keys['ArrowLeft']  || keys['a'] || keys['A']) mx -= 1;
+  if (keys['ArrowRight'] || keys['d'] || keys['D']) mx += 1;
+  if (keys['ArrowUp']    || keys['w'] || keys['W']) my -= 1;
+  if (keys['ArrowDown']  || keys['s'] || keys['S']) my += 1;
+
+  if (joystick.active) {
+    const jl = Math.hypot(joystick.dx, joystick.dy);
+    if (jl > 8) {
+      const norm = Math.min(jl, 60);
+      mx += (joystick.dx / jl) * (norm / 60);
+      my += (joystick.dy / jl) * (norm / 60);
+    }
+  }
+
+  const ml = Math.hypot(mx, my);
+  if (ml > 1) { mx /= ml; my /= ml; }
+
+  player.x += mx * spd;
+  player.y += my * spd;
+  if (mx !== 0) player.facing = mx > 0 ? 1 : -1;
+
+  if (ml > 0.1) {
+    player.animTimer++;
+    if (player.animTimer >= 8) { player.animFrame = (player.animFrame + 1) % 4; player.animTimer = 0; }
+  } else {
+    player.animFrame = 0;
+  }
+
+  if (player.x < -player.r || player.x > GW + player.r || player.y < -player.r || player.y > GH + player.r) {
+    takeDamage(1, '画面外！⚠️');
+    player.x = clamp(player.x, player.r, GW - player.r);
+    player.y = clamp(player.y, player.r, GH - player.r);
+  }
+
+  if (player.invincible > 0) player.invincible--;
+  player.blinkTimer++;
+
+  updateSkillBtn();
+}
+
+let _lastSkillReady = null;
+let _lastSkillSec   = -1;
+function updateSkillBtn() {
+  const ready = skillCooldown === 0;
+  if (ready !== _lastSkillReady) {
+    _lastSkillReady = ready;
+    if (ready) {
+      skillBtn.classList.add('ready');
+      skillBtn.innerHTML = '言い訳<br>スキル<br>🌟';
+      _lastSkillSec = -1;
+    } else {
+      skillBtn.classList.remove('ready');
+    }
+  }
+  if (!ready) {
+    const sec = Math.ceil(skillCooldown / 60);
+    if (sec !== _lastSkillSec) {
+      _lastSkillSec = sec;
+      skillBtn.innerHTML = `言い訳<br>スキル<br>${sec}秒`;
+    }
+  }
+}
+
+function updateEnemy() {
+  enemyAngle += 0.007;
+
+  if (skillEffect && skillEffect.type === 'stop') return;
+
+  if (enemyAttackTimer > 0) {
+    enemyAttackTimer--;
+  } else {
+    doEnemyAttack();
+    enemyAttackTimer = DIFF[difficulty].attackInterval;
+  }
+
+  if (enemyChaseTimer > 0) {
+    enemyChaseTimer--;
+    if (enemyChaseTimer === 0) enemyMode = 'normal';
+  }
+}
+
+function doEnemyAttack() {
+  const roll = Math.random();
+  if (roll < 0.6) {
+    const count = difficulty === 'hard' ? 3 : (difficulty === 'normal' ? 2 : 1);
+    for (let i = 0; i < count; i++) {
+      const ox = rand(-70, 70);
+      const oy = rand(-70, 70);
+      lightnings.push(mkLightning(player.x + ox, player.y + oy));
+    }
+    flashAlpha  = 0.25;
+    flashColor  = 'rgba(255,200,0,';
+  } else {
+    enemyMode       = 'chase';
+    enemyChaseTimer = 200;
+    const add = difficulty === 'hard' ? 2 : 1;
+    for (let i = 0; i < add; i++) obstacles.push(mkObstacle(true));
+    flashAlpha = 0.3;
+    flashColor = 'rgba(255,0,0,';
+    floatTexts.push(mkFloat(GW / 2, GH / 2 - 30, '⚠️ お母さん激怒！', '#FF0000', 18));
+  }
+}
+
+function updateObstacles() {
+  const stopped = skillEffect && skillEffect.type === 'stop';
+
+  obstacles = obstacles.filter(o =>
+    o.x > -80 && o.x < GW + 80 && o.y > -80 && o.y < GH + 80
+  );
+
+  // 装備中の剣レベルを取得
+  const swordLevel = purchasedItems.brain ? 2 : purchasedItems.sword;
+  const kbDuration = swordLevel === 2 ? 300 : (swordLevel === 1 ? 60 : 0);
+
+  for (const ob of obstacles) {
+    if (stopped) continue;
+
+    ob.wobble += ob.wobbleSpeed;
+
+    if (ob.tracking) {
+      const ang = Math.atan2(player.y - ob.y, player.x - ob.x);
+      ob.vx += Math.cos(ang) * 0.18;
+      ob.vy += Math.sin(ang) * 0.18;
+      const sp = Math.hypot(ob.vx, ob.vy);
+      if (sp > ob.speed * 1.6) { ob.vx = ob.vx / sp * ob.speed * 1.6; ob.vy = ob.vy / sp * ob.speed * 1.6; }
+    } else {
+      ob.vx += Math.sin(ob.wobble) * 0.06;
+      ob.vy += Math.cos(ob.wobble * 1.4) * 0.06;
+      const sp = Math.hypot(ob.vx, ob.vy);
+      if (sp > ob.speed) { ob.vx = ob.vx / sp * ob.speed; ob.vy = ob.vy / sp * ob.speed; }
+    }
+
+    ob.x += ob.vx;
+    ob.y += ob.vy;
+
+    // プレイヤーとの衝突
+    if (player.invincible === 0 && dist(player, ob) < player.r + ob.r - 6) {
+      if (kbDuration > 0 && swordCooldown === 0) {
+        // 剣でガード！ノックバック
+        swordCooldown = kbDuration;
+        const a = Math.atan2(ob.y - player.y, ob.x - player.x);
+        ob.vx = Math.cos(a) * 10;
+        ob.vy = Math.sin(a) * 10;
+        ob.tracking = false;
+        player.invincible = 40;
+        const swordEmoji = swordLevel === 2 ? '⚔️' : '🗡️';
+        floatTexts.push(mkFloat(player.x, player.y - 35, `${swordEmoji} ガード！`, '#FFD700', 17));
+        burst(player.x, player.y, '#FFD700', 14, 2, 5.5);
+        SFX.sword();
+      } else {
+        takeDamage(1, 'イタイ！💥');
+        const a = Math.atan2(ob.y - player.y, ob.x - player.x);
+        ob.vx = Math.cos(a) * 4;
+        ob.vy = Math.sin(a) * 4;
+      }
+    }
+  }
+}
+
+function updateItems() {
+  for (const item of items) {
+    item.bob += 0.055;
+    if (item.done) continue;
+    if (dist(player, item) < player.r + item.r) {
+      item.done = true;
+      burst(item.x, item.y, item.type === 'coin' ? '#FFD700' : '#FF6B6B', 10, 1.5, 3.5);
+
+      if (item.type === 'coin') {
+        score += 10;
+        sessionEarnedCoins += 10;
+        itemsCollected++;
+        floatTexts.push(mkFloat(item.x, item.y - 10, '+10 🪙', '#FFD700'));
+        SFX.coin();
+        if (selectedMode === MODE.COLLECTION && itemsCollected >= 10) { endGame(true); return; }
+      } else {
+        if (Math.random() < 0.5) {
+          lives = Math.min(lives + 1, DIFF[difficulty].lives + purchasedItems.extraLives + 2);
+          floatTexts.push(mkFloat(item.x, item.y - 10, '❤️ HP+1', '#FF6B6B'));
+        } else {
+          player.speedBoost = 200;
+          floatTexts.push(mkFloat(item.x, item.y - 10, '💨 スピードUP！', '#00FF88'));
+        }
+        SFX.meat();
+      }
+    }
+  }
+  items = items.filter(i => !i.done);
+}
+
+function updateLightnings() {
+  for (const lt of lightnings) {
+    if (lt.active > 0) {
+      lt.active--;
+    } else if (lt.warn > 0) {
+      lt.warn--;
+      if (lt.warn === 0) {
+        lt.active = 28;
+        screenShake = 14;
+        flashAlpha  = 0.5;
+        flashColor  = 'rgba(255,255,150,';
+        SFX.thunder();
+        burst(lt.x, lt.y, '#FFFF44', 18, 2, 6);
+
+        if (player.invincible === 0 && dist(player, lt) < lt.r + player.r + 5) {
+          takeDamage(1, '⚡ビリビリ！');
+        }
+      }
+    }
+  }
+  lightnings = lightnings.filter(lt => lt.warn > 0 || lt.active > 0);
+}
+
+function updateParticles() {
+  particles = particles.filter(p => p.life > 0);
+  for (const p of particles) {
+    p.x  += p.vx;
+    p.y  += p.vy;
+    p.vy += 0.06;
+    p.vx *= 0.97;
+    p.life--;
+  }
+}
+
+function updateFloatTexts() {
+  floatTexts = floatTexts.filter(f => f.life > 0);
+  for (const f of floatTexts) { f.y += f.vy; f.life--; }
+}
+
+// === Damage ===
+function takeDamage(amt, text) {
+  if (player.invincible > 0) return;
+  lives -= amt;
+  player.invincible = 130;
+  screenShake = 18;
+  flashAlpha  = 0.55;
+  flashColor  = 'rgba(255,30,30,';
+  SFX.hit();
+  floatTexts.push(mkFloat(player.x, player.y - 35, text, '#FF3333', 15));
+  burst(player.x, player.y, '#FF4444', 12, 1, 4);
+  if (lives <= 0) { endGame(false); }
+}
+
+// === Skill ===
+function activateSkill() {
+  if (skillCooldown > 0 || gameState !== STATE.PLAYING) return;
+  skillCooldown = 500;
+  SFX.skill();
+
+  const type = Math.random() < 0.5 ? 'invincible' : 'stop';
+  skillEffect = { type, timer: 185 };
+
+  if (type === 'invincible') {
+    player.invincible = 185;
+    floatTexts.push(mkFloat(player.x, player.y - 50, '「宿題やった！」→ 3秒無敵！', '#00FFFF', 13));
+  } else {
+    floatTexts.push(mkFloat(player.x, player.y - 50, '「犬が食べた！」→ 敵停止！', '#00FF88', 13));
+  }
+
+  burst(player.x, player.y, type === 'invincible' ? '#00FFFF' : '#00FF88', 22, 2, 5.5);
+  screenShake = 6;
+}
+
+// === End Game ===
+function endGame(win) {
+  if (win) { SFX.win(); } else { SFX.lose(); }
+  // コインを累計に追加
+  totalCoins += sessionEarnedCoins;
+  savePersistentData();
+  gameState = win ? STATE.WIN : STATE.GAMEOVER;
+  skillBtn.style.display = 'none';
+}
+
+// =====================================================
+//  DRAW
+// =====================================================
+function draw() {
+  ctx.clearRect(0, 0, GW, GH);
+
+  const sx = screenShake > 0.5 ? rand(-screenShake, screenShake) : 0;
+  const sy = screenShake > 0.5 ? rand(-screenShake, screenShake) : 0;
+  ctx.save();
+  ctx.translate(sx, sy);
+
+  drawBackground();
+  drawItems();
+  drawLightnings();
+  drawObstacles();
+  drawPlayer();
+  drawParticles();
+  drawFloatTexts();
+
+  ctx.restore();
+
+  if (flashAlpha > 0.01) {
+    ctx.fillStyle = flashColor + flashAlpha + ')';
+    ctx.fillRect(0, 0, GW, GH);
+  }
+
+  if (skillEffect && skillEffect.type === 'invincible') {
+    const h = (frameCount * 6) % 360;
+    ctx.fillStyle = `hsla(${h},100%,70%,0.12)`;
+    ctx.fillRect(0, 0, GW, GH);
+  }
+
+  drawHUD();
+}
+
+// --- Background ---
+function drawBackground() {
+  ctx.drawImage(bgCanvas, 0, 0);
+
+  const momDist = 230;
+  const momX = GW / 2 + Math.cos(enemyAngle) * momDist;
+  const momY = GH / 2 + Math.sin(enemyAngle) * (momDist * 1.5);
+
+  if (enemyMode === 'chase') {
+    ctx.save();
+    ctx.globalAlpha = 0.12 + Math.sin(frameCount * 0.12) * 0.05;
+    ctx.fillStyle = 'rgba(255,0,0,1)';
+    ctx.fillRect(0, 0, GW, GH);
+    ctx.restore();
+  }
+
+  const momScale = 1 + Math.sin(frameCount * 0.14) * 0.08;
+  ctx.save();
+  ctx.font = '52px Arial';
+  ctx.textAlign = 'center';
+  ctx.textBaseline = 'middle';
+  ctx.translate(clamp(momX, -20, GW + 20), clamp(momY, -20, GH + 20));
+  ctx.scale(momScale, momScale);
+  ctx.fillText('👩‍🦱', 0, 0);
+  ctx.restore();
+
+  if (frameCount % 280 < 70) {
+    const bx = clamp(momX + 45, 90, GW - 30);
+    const by = clamp(momY - 40, 70, GH - 30);
+    ctx.save();
+    ctx.fillStyle   = '#FFFFFF';
+    ctx.strokeStyle = '#FF0000';
+    ctx.lineWidth   = 2;
+    rRect(bx - 5, by - 22, 136, 34, 10, true, true);
+    ctx.fillStyle    = '#CC0000';
+    ctx.font         = 'bold 12px Arial';
+    ctx.textAlign    = 'center';
+    ctx.textBaseline = 'middle';
+    ctx.fillText('宿題やったの！？😤', bx + 63, by - 5);
+    ctx.restore();
+  }
+}
+
+// --- Player ---
+function drawPlayer() {
+  const p = player;
+
+  if (p.speedBoost > 0) {
+    ctx.save();
+    ctx.globalAlpha = 0.3;
+    ctx.fillStyle = '#00FF88';
+    ctx.beginPath();
+    ctx.arc(p.x - p.facing * 14, p.y + 4, p.r * 0.8, 0, Math.PI * 2);
+    ctx.fill();
+    ctx.restore();
+  }
+
+  // 靴装備エフェクト（青いオーラ）
+  if (purchasedItems.shoes || purchasedItems.brain) {
+    ctx.save();
+    ctx.globalAlpha = 0.2 + Math.sin(frameCount * 0.18) * 0.1;
+    ctx.strokeStyle = '#00AAFF';
+    ctx.lineWidth = 3;
+    ctx.beginPath(); ctx.arc(p.x, p.y, p.r * 1.5, 0, Math.PI * 2); ctx.stroke();
+    ctx.restore();
+  }
+
+  if (p.invincible > 0) {
+    const visible = Math.floor(p.blinkTimer / 5) % 2 === 0;
+    if (!visible) return;
+    ctx.save();
+    ctx.globalAlpha = 0.55;
+    ctx.strokeStyle = '#00FFFF';
+    ctx.lineWidth   = 4;
+    ctx.beginPath(); ctx.arc(p.x, p.y, p.r * 1.8, 0, Math.PI * 2); ctx.stroke();
+    ctx.restore();
+  }
+
+  const bob = Math.sin(p.animFrame * Math.PI * 0.5) * 2.5;
+  const ey  = p.facing;
+
+  ctx.fillStyle = 'rgba(0,0,0,0.18)';
+  ctx.beginPath(); ctx.ellipse(p.x, p.y + p.r + 3, p.r * 0.75, 4, 0, 0, Math.PI * 2); ctx.fill();
+
+  ctx.fillStyle   = '#3498DB';
+  ctx.strokeStyle = '#1A6FA0';
+  ctx.lineWidth   = 2;
+  ctx.beginPath(); ctx.arc(p.x, p.y + bob, p.r, 0, Math.PI * 2);
+  ctx.fill(); ctx.stroke();
+
+  ctx.fillStyle   = '#FDBCB4';
+  ctx.strokeStyle = '#E09080';
+  ctx.lineWidth   = 1.5;
+  ctx.beginPath(); ctx.arc(p.x, p.y - p.r * 0.8 + bob, p.r * 0.72, 0, Math.PI * 2);
+  ctx.fill(); ctx.stroke();
+
+  ctx.fillStyle = '#5C3317';
+  ctx.beginPath();
+  ctx.arc(p.x, p.y - p.r * 0.8 + bob - p.r * 0.3, p.r * 0.7, Math.PI, Math.PI * 2);
+  ctx.fill();
+
+  ctx.fillStyle = '#222';
+  ctx.beginPath();
+  ctx.arc(p.x - 4 + ey * 3, p.y - p.r * 0.9 + bob, 2.5, 0, Math.PI * 2);
+  ctx.arc(p.x + 4 + ey * 3, p.y - p.r * 0.9 + bob, 2.5, 0, Math.PI * 2);
+  ctx.fill();
+
+  ctx.strokeStyle = '#555';
+  ctx.lineWidth   = 1.5;
+  ctx.beginPath();
+  ctx.arc(p.x + ey * 2, p.y - p.r * 0.72 + bob, 4, 0.2, Math.PI - 0.2);
+  ctx.stroke();
+
+  ctx.fillStyle   = '#E74C3C';
+  ctx.strokeStyle = '#C0392B';
+  ctx.lineWidth   = 1;
+  const bpFace = -p.facing;
+  ctx.beginPath();
+  ctx.roundRect(p.x + bpFace * (p.r - 2), p.y - 5 + bob, 12 * bpFace, 18, 3);
+  ctx.fill(); ctx.stroke();
+
+  // 剣を描画（装備時）
+  const swordLevel = purchasedItems.brain ? 2 : purchasedItems.sword;
+  if (swordLevel > 0) {
+    const sx = p.x + p.facing * (p.r + 2);
+    const sy2 = p.y + 2 + bob;
+    ctx.save();
+    ctx.translate(sx, sy2);
+    ctx.rotate(p.facing * 0.4);
+    ctx.font = swordLevel === 2 ? '18px Arial' : '14px Arial';
+    ctx.textAlign = 'center';
+    ctx.textBaseline = 'middle';
+    ctx.fillText(swordLevel === 2 ? '⚔️' : '🗡️', 0, 0);
+    // クールダウン中は暗くする
+    if (swordCooldown > 0) {
+      ctx.globalAlpha = 0.4;
+      ctx.fillStyle = 'rgba(0,0,0,0.5)';
+      ctx.beginPath(); ctx.arc(0, 0, 12, 0, Math.PI * 2); ctx.fill();
+    }
+    ctx.restore();
+  }
+}
+
+// --- Obstacles ---
+function drawObstacles() {
+  for (const ob of obstacles) {
+    ctx.save();
+
+    if (ob.tracking) {
+      ctx.globalAlpha = 0.28 + Math.sin(frameCount * 0.15) * 0.12;
+      ctx.fillStyle = 'rgba(231,76,60,0.7)';
+      ctx.beginPath(); ctx.arc(ob.x, ob.y, ob.r * 1.8, 0, Math.PI * 2); ctx.fill();
+      ctx.globalAlpha = 1;
+    }
+
+    ctx.font = `${ob.r * 1.9}px Arial`;
+    ctx.textAlign    = 'center';
+    ctx.textBaseline = 'middle';
+    ctx.translate(ob.x, ob.y);
+    ctx.rotate(Math.sin(ob.wobble) * 0.25);
+    ctx.fillText(ob.emoji, 0, 0);
+
+    ctx.restore();
+  }
+}
+
+// --- Items ---
+function drawItems() {
+  for (const item of items) {
+    const bob   = Math.sin(item.bob) * 4;
+    const pulse = 0.75 + Math.sin(item.bob * 2) * 0.25;
+
+    ctx.save();
+    ctx.globalAlpha = pulse;
+
+    ctx.strokeStyle = item.type === 'coin' ? '#FFD700' : '#FF6B6B';
+    ctx.lineWidth   = 2;
+    ctx.globalAlpha = 0.4 * pulse;
+    ctx.beginPath(); ctx.arc(item.x, item.y + bob, item.r + 6, 0, Math.PI * 2); ctx.stroke();
+
+    ctx.globalAlpha = pulse;
+    ctx.font = '26px Arial';
+    ctx.textAlign    = 'center';
+    ctx.textBaseline = 'middle';
+    ctx.fillText(item.type === 'coin' ? '🪙' : '🍖', item.x, item.y + bob);
+
+    ctx.restore();
+  }
+}
+
+// --- Lightnings ---
+function drawLightnings() {
+  for (const lt of lightnings) {
+    ctx.save();
+
+    if (lt.warn > 0) {
+      const progress = 1 - lt.warn / 110;
+      const blink    = 0.5 + Math.sin(frameCount * 0.35) * 0.4;
+
+      ctx.globalAlpha = blink * 0.85;
+      ctx.strokeStyle = `hsl(${20 + progress * 20},100%,50%)`;
+      ctx.lineWidth   = 3;
+      ctx.setLineDash([6, 6]);
+      ctx.beginPath();
+      ctx.arc(lt.x, lt.y, lt.r + 8, 0, Math.PI * 2 * progress);
+      ctx.stroke();
+      ctx.setLineDash([]);
+
+      ctx.globalAlpha = 0.15 * blink;
+      ctx.fillStyle   = '#FF4400';
+      ctx.beginPath(); ctx.arc(lt.x, lt.y, lt.r, 0, Math.PI * 2); ctx.fill();
+
+      ctx.globalAlpha = blink;
+      ctx.strokeStyle = '#FF6600';
+      ctx.lineWidth   = 2;
+      ctx.beginPath();
+      ctx.moveTo(lt.x - lt.r, lt.y); ctx.lineTo(lt.x + lt.r, lt.y);
+      ctx.moveTo(lt.x, lt.y - lt.r); ctx.lineTo(lt.x, lt.y + lt.r);
+      ctx.stroke();
+
+      ctx.font = '16px Arial'; ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
+      ctx.globalAlpha = blink;
+      ctx.fillText('⚡', lt.x, lt.y - lt.r - 12);
+
+    } else if (lt.active > 0) {
+      const alpha = lt.active / 28;
+
+      ctx.globalAlpha = alpha * 0.9;
+      ctx.fillStyle   = '#FFFF88';
+      ctx.beginPath(); ctx.arc(lt.x, lt.y, lt.r, 0, Math.PI * 2); ctx.fill();
+
+      ctx.globalAlpha = alpha;
+      ctx.strokeStyle = '#FF8800';
+      ctx.lineWidth   = 3;
+      ctx.beginPath(); ctx.arc(lt.x, lt.y, lt.r + 8, 0, Math.PI * 2); ctx.stroke();
+
+      ctx.font = '50px Arial'; ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
+      ctx.fillText('⚡', lt.x, lt.y);
+    }
+
+    ctx.restore();
+  }
+}
+
+// --- Particles ---
+function drawParticles() {
+  for (const p of particles) {
+    const alpha = p.life / p.maxLife;
+    ctx.save();
+    ctx.globalAlpha = alpha;
+    ctx.fillStyle   = p.col;
+    ctx.beginPath(); ctx.arc(p.x, p.y, Math.max(0, p.r * alpha), 0, Math.PI * 2); ctx.fill();
+    ctx.restore();
+  }
+}
+
+// --- Floating Texts ---
+function drawFloatTexts() {
+  for (const f of floatTexts) {
+    const alpha = f.life / 65;
+    ctx.save();
+    ctx.globalAlpha  = alpha;
+    ctx.font         = `bold ${f.size}px Arial`;
+    ctx.textAlign    = 'center';
+    ctx.textBaseline = 'middle';
+    ctx.strokeStyle  = '#000';
+    ctx.lineWidth    = 3;
+    ctx.strokeText(f.text, f.x, f.y);
+    ctx.fillStyle = f.col;
+    ctx.fillText(f.text, f.x, f.y);
+    ctx.restore();
+  }
+}
+
+// --- HUD ---
+function drawHUD() {
+  const cfg = DIFF[difficulty];
+  const totalMaxLives = cfg.lives + purchasedItems.extraLives;
+
+  // Top bar
+  ctx.fillStyle = 'rgba(0,0,0,0.65)';
+  rRect(5, 5, GW - 10, 65, 10, true, false);
+
+  // Lives hearts
+  const displayLives = Math.min(totalMaxLives, 8);
+  for (let i = 0; i < displayLives; i++) {
+    ctx.font = '17px Arial';
+    ctx.textBaseline = 'top';
+    ctx.fillText(i < lives ? '❤️' : '🖤', 12 + i * 22, 10);
+  }
+  if (totalMaxLives > 8) {
+    ctx.font = '10px Arial';
+    ctx.fillStyle = '#FF6666';
+    ctx.textBaseline = 'top';
+    ctx.fillText(`×${totalMaxLives}`, 12 + 8 * 22, 14);
+  }
+
+  // Right: timer / count
+  ctx.textAlign = 'right';
+  ctx.font      = 'bold 15px Arial';
+  ctx.fillStyle = '#FFFFFF';
+  ctx.textBaseline = 'top';
+  if (selectedMode === MODE.SURVIVAL) {
+    ctx.fillText(`⏱ ${timeLeft}秒`, GW - 14, 10);
+  } else {
+    ctx.fillText(`🪙 ${itemsCollected}/10`, GW - 14, 10);
+    ctx.font = '12px Arial';
+    ctx.fillText(`⏱ ${timeLeft}秒`, GW - 14, 30);
+  }
+
+  // Center score
+  ctx.textAlign    = 'center';
+  ctx.font         = 'bold 13px Arial';
+  ctx.fillStyle    = '#FFD700';
+  ctx.textBaseline = 'top';
+  ctx.fillText(`スコア: ${score}`, GW / 2, 10);
+
+  // Skill status
+  const ready = skillCooldown === 0;
+  ctx.font      = '11px Arial';
+  ctx.fillStyle = ready ? '#00FF88' : '#BBBBBB';
+  ctx.textAlign = 'center';
+  const cdSec   = Math.ceil(skillCooldown / 60);
+  ctx.fillText(ready ? '🌟 言い訳スキル: 準備OK [Shift]' : `💤 言い訳スキル: ${cdSec}秒後`, GW / 2, 28);
+
+  // 装備アイコン表示
+  const swordLevel = purchasedItems.brain ? 2 : purchasedItems.sword;
+  const shoesOn = purchasedItems.shoes || purchasedItems.brain;
+  if (swordLevel > 0 || shoesOn || purchasedItems.brain) {
+    let equip = '';
+    if (purchasedItems.brain) equip = '🧠⚔️👟';
+    else {
+      if (swordLevel === 2) equip += '⚔️';
+      else if (swordLevel === 1) equip += '🗡️';
+      if (shoesOn) equip += '👟';
+    }
+    if (equip) {
+      ctx.font = '11px Arial';
+      ctx.textAlign = 'left';
+      ctx.fillStyle = '#FFD700';
+      ctx.textBaseline = 'top';
+      ctx.fillText(equip, 12, 32);
+      // 剣クールダウン表示
+      if (swordLevel > 0 && swordCooldown > 0) {
+        ctx.font = '10px Arial';
+        ctx.fillStyle = '#AAAAAA';
+        ctx.fillText(`${Math.ceil(swordCooldown / 60)}s`, 12 + equip.length * 8, 44);
+      }
+    }
+  }
+
+  // Active skill bar
+  if (skillEffect) {
+    const pct = skillEffect.timer / 185;
+    const col = skillEffect.type === 'invincible' ? '#00FFFF' : '#00FF88';
+    ctx.font      = 'bold 12px Arial';
+    ctx.fillStyle = col;
+    ctx.textAlign = 'center';
+    ctx.fillText(
+      skillEffect.type === 'invincible'
+        ? `✨ 無敵中！ ${Math.ceil(skillEffect.timer / 60)}秒`
+        : `🛑 敵停止中！ ${Math.ceil(skillEffect.timer / 60)}秒`,
+      GW / 2, 46
+    );
+    ctx.fillStyle = col + '44';
+    ctx.fillRect(GW * 0.18, 60, GW * 0.64 * pct, 5);
+    ctx.strokeStyle = col;
+    ctx.lineWidth   = 1;
+    ctx.strokeRect(GW * 0.18, 60, GW * 0.64, 5);
+  }
+
+  // Speed boost
+  if (player && player.speedBoost > 0) {
+    const yy = skillEffect ? 75 : 50;
+    ctx.font      = 'bold 12px Arial';
+    ctx.fillStyle = '#00FF88';
+    ctx.textAlign = 'center';
+    ctx.fillText(`💨 スピードUP！ ${Math.ceil(player.speedBoost / 60)}秒`, GW / 2, yy);
+  }
+
+  // Chase warning banner
+  if (enemyMode === 'chase') {
+    const a = 0.85 + Math.sin(frameCount * 0.2) * 0.15;
+    ctx.save();
+    ctx.globalAlpha = a;
+    ctx.fillStyle   = 'rgba(180,0,0,0.7)';
+    rRect(20, GH - 65, GW - 40, 32, 8, true, false);
+    ctx.fillStyle    = '#FFFFFF';
+    ctx.font         = 'bold 15px Arial';
+    ctx.textAlign    = 'center';
+    ctx.textBaseline = 'middle';
+    ctx.fillText('⚠️ お母さん激怒中！逃げろ！', GW / 2, GH - 49);
+    ctx.restore();
+  }
+
+  // Mobile joystick visual
+  if (isMobile && joystick.active) {
+    ctx.save();
+    ctx.globalAlpha = 0.25;
+    ctx.strokeStyle = '#FFFFFF';
+    ctx.lineWidth   = 2;
+    ctx.beginPath(); ctx.arc(joystick.baseX, joystick.baseY, 50, 0, Math.PI * 2); ctx.stroke();
+    ctx.globalAlpha = 0.4;
+    ctx.fillStyle   = '#FFFFFF';
+    const knobX = joystick.baseX + clamp(joystick.dx, -50, 50) * 0.8;
+    const knobY = joystick.baseY + clamp(joystick.dy, -50, 50) * 0.8;
+    ctx.beginPath(); ctx.arc(knobX, knobY, 22, 0, Math.PI * 2); ctx.fill();
+    ctx.restore();
+  }
+}
+
+// =====================================================
+//  START SCREEN
+// =====================================================
+const _startBg = (() => {
+  const g = ctx.createLinearGradient(0, 0, 0, GH);
+  g.addColorStop(0, '#0d0721');
+  g.addColorStop(1, '#1f0b3a');
+  return g;
+})();
+const _startBtnGrad = (() => {
+  const g = ctx.createLinearGradient(-90, -22, 90, 22);
+  g.addColorStop(0, '#FF4500');
+  g.addColorStop(1, '#FF8C00');
+  return g;
+})();
+const _shopBtnGrad = (() => {
+  const g = ctx.createLinearGradient(-80, -18, 80, 18);
+  g.addColorStop(0, '#8E44AD');
+  g.addColorStop(1, '#9B59B6');
+  return g;
+})();
+
+function drawStartScreen() {
+  ctx.fillStyle = _startBg;
+  ctx.fillRect(0, 0, GW, GH);
+
+  // Stars
+  for (let i = 0; i < 55; i++) {
+    const sx = (i * 71 + 13) % GW;
+    const sy = (i * 139 + 7) % GH;
+    const a  = 0.4 + 0.6 * Math.abs(Math.sin(frameCount * 0.04 + i * 0.8));
+    ctx.fillStyle = `rgba(255,255,255,${a})`;
+    ctx.fillRect(sx, sy, 2, 2);
+  }
+
+  // ==============================
+  // コインバナー（最上部）
+  // ==============================
+  ctx.fillStyle = 'rgba(255, 200, 0, 0.15)';
+  ctx.strokeStyle = 'rgba(255, 200, 0, 0.5)';
+  ctx.lineWidth = 1.5;
+  rRect(10, 6, GW - 20, 40, 10, true, true);
+
+  ctx.font = 'bold 15px Arial';
+  ctx.textAlign = 'center';
+  ctx.textBaseline = 'middle';
+  ctx.fillStyle = '#FFD700';
+  ctx.fillText(`🪙 ためたコイン：${totalCoins.toLocaleString()} 枚`, GW / 2, 26);
+
+  // ==============================
+  // Title card（少し下へ）
+  // ==============================
+  ctx.fillStyle   = 'rgba(255,255,255,0.08)';
+  ctx.strokeStyle = 'rgba(255,200,0,0.4)';
+  ctx.lineWidth   = 2;
+  rRect(18, 52, GW - 36, 182, 18, true, true);
+
+  ctx.font = '60px Arial'; ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
+  ctx.fillText('👩‍🦱⚡😱', GW / 2, 132);
+
+  ctx.font         = 'bold 19px Arial';
+  ctx.textBaseline = 'alphabetic';
+  ctx.fillStyle    = '#FFD700';
+  ctx.strokeStyle  = '#000';
+  ctx.lineWidth    = 3;
+  ctx.strokeText('宿題やったの！？', GW / 2, 190);
+  ctx.fillText   ('宿題やったの！？', GW / 2, 190);
+
+  ctx.font      = 'bold 15px Arial';
+  ctx.fillStyle = '#FF6600';
+  ctx.strokeText('お母さんの雷から逃げろ！', GW / 2, 214);
+  ctx.fillText   ('お母さんの雷から逃げろ！', GW / 2, 214);
+
+  // ==============================
+  // Mode selection
+  // ==============================
+  ctx.font      = 'bold 12px Arial';
+  ctx.fillStyle = '#EEE';
+  ctx.strokeStyle = 'transparent';
+  ctx.fillText('ゲームモードを選んでね', GW / 2, 248);
+
+  const m1sel = selectedMode === MODE.SURVIVAL;
+  const m2sel = selectedMode === MODE.COLLECTION;
+
+  ctx.fillStyle   = m1sel ? '#E67E22' : 'rgba(230,126,34,0.3)';
+  ctx.strokeStyle = m1sel ? '#FFD700' : 'rgba(255,215,0,0.4)';
+  ctx.lineWidth   = m1sel ? 3 : 1;
+  rRect(22, 256, 148, 55, 12, true, true);
+  ctx.fillStyle    = '#FFF';
+  ctx.font         = 'bold 13px Arial';
+  ctx.textBaseline = 'alphabetic';
+  ctx.fillText('⏱ サバイバル', 96, 278);
+  ctx.font      = '11px Arial';
+  ctx.fillStyle = '#FFE8CC';
+  ctx.fillText('60秒生き残れ！', 96, 298);
+
+  ctx.fillStyle   = m2sel ? '#27AE60' : 'rgba(39,174,96,0.3)';
+  ctx.strokeStyle = m2sel ? '#FFD700' : 'rgba(255,215,0,0.4)';
+  ctx.lineWidth   = m2sel ? 3 : 1;
+  rRect(190, 256, 148, 55, 12, true, true);
+  ctx.fillStyle    = '#FFF';
+  ctx.font         = 'bold 13px Arial';
+  ctx.fillText('🪙 収集', 264, 278);
+  ctx.font      = '11px Arial';
+  ctx.fillStyle = '#CCFFCC';
+  ctx.fillText('120秒でコイン10個！', 264, 298);
+
+  // ==============================
+  // Difficulty
+  // ==============================
+  ctx.fillStyle = '#EEE';
+  ctx.font      = 'bold 12px Arial';
+  ctx.fillText('難易度を選んでね', GW / 2, 332);
+
+  const diffs  = ['easy','normal','hard'];
+  const labels = [['😊','やさしい','❤️×5'], ['😐','ふつう','❤️×3'], ['😤','むずかしい','❤️×1']];
+  const dCols  = ['#2ECC71','#F39C12','#E74C3C'];
+  const dW     = (GW - 54) / 3;
+
+  diffs.forEach((d, i) => {
+    const bx  = 18 + i * (dW + 9);
+    const sel = difficulty === d;
+    ctx.fillStyle   = sel ? dCols[i] : `${dCols[i]}44`;
+    ctx.strokeStyle = sel ? '#FFF' : 'rgba(255,255,255,0.2)';
+    ctx.lineWidth   = sel ? 2.5 : 1;
+    rRect(bx, 340, dW, 65, 10, true, true);
+    ctx.fillStyle    = '#FFF';
+    ctx.font         = '16px Arial';
+    ctx.textBaseline = 'middle';
+    ctx.fillText(labels[i][0], bx + dW / 2, 356);
+    ctx.font = 'bold 10px Arial';
+    ctx.fillText(labels[i][1], bx + dW / 2, 374);
+    ctx.font = '10px Arial';
+    ctx.fillText(labels[i][2], bx + dW / 2, 390);
+  });
+
+  // ==============================
+  // Start button
+  // ==============================
+  const btnS = 1 + Math.sin(frameCount * 0.1) * 0.04;
+  ctx.save();
+  ctx.translate(GW / 2, 480);
+  ctx.scale(btnS, btnS);
+  ctx.fillStyle   = _startBtnGrad;
+  ctx.strokeStyle = '#FFD700';
+  ctx.lineWidth   = 3;
+  rRect(-88, -26, 176, 52, 26, true, true);
+  ctx.fillStyle    = '#FFF';
+  ctx.font         = 'bold 21px Arial';
+  ctx.textAlign    = 'center';
+  ctx.textBaseline = 'middle';
+  ctx.fillText('▶ スタート！', 0, 0);
+  ctx.restore();
+
+  // ==============================
+  // Shop button
+  // ==============================
+  ctx.save();
+  ctx.translate(GW / 2, 535);
+  ctx.fillStyle   = _shopBtnGrad;
+  ctx.strokeStyle = '#DDA0FF';
+  ctx.lineWidth   = 2;
+  rRect(-80, -20, 160, 40, 20, true, true);
+  ctx.fillStyle    = '#FFF';
+  ctx.font         = 'bold 16px Arial';
+  ctx.textAlign    = 'center';
+  ctx.textBaseline = 'middle';
+  ctx.fillText('🛒 ショップ', 0, 0);
+  ctx.restore();
+
+  // Controls hint
+  ctx.font      = '10px Arial';
+  ctx.fillStyle = 'rgba(255,255,255,0.45)';
+  ctx.textAlign    = 'center';
+  ctx.textBaseline = 'alphabetic';
+  ctx.fillText('PC: WASD / 矢印キー で移動　Shift: 言い訳スキル', GW / 2, 590);
+  ctx.fillText('スマホ: 左タッチでスティック操作', GW / 2, 606);
+
+  frameCount++;
+}
+
+// =====================================================
+//  SHOP SCREEN
+// =====================================================
+const SHOP_ITEM_START_Y = 112;
+const SHOP_ROW_H = 78;
+
+function drawShopScreen() {
+  // Background
+  const bg = ctx.createLinearGradient(0, 0, 0, GH);
+  bg.addColorStop(0, '#0d0721');
+  bg.addColorStop(1, '#1a0535');
+  ctx.fillStyle = bg;
+  ctx.fillRect(0, 0, GW, GH);
+
+  // Stars
+  for (let i = 0; i < 30; i++) {
+    const sx = (i * 83 + 5) % GW;
+    const sy = (i * 127 + 11) % GH;
+    const a  = 0.2 + 0.3 * Math.abs(Math.sin(frameCount * 0.03 + i * 0.6));
+    ctx.fillStyle = `rgba(255,255,255,${a})`;
+    ctx.fillRect(sx, sy, 1.5, 1.5);
+  }
+
+  // Header
+  ctx.fillStyle = 'rgba(142, 68, 173, 0.3)';
+  ctx.strokeStyle = 'rgba(200, 130, 255, 0.6)';
+  ctx.lineWidth = 2;
+  rRect(10, 8, GW - 20, 45, 12, true, true);
+  ctx.font = 'bold 20px Arial';
+  ctx.textAlign = 'center';
+  ctx.textBaseline = 'middle';
+  ctx.fillStyle = '#FFFFFF';
+  ctx.fillText('🛒 アイテムショップ', GW / 2, 31);
+
+  // Coin balance
+  ctx.fillStyle = 'rgba(255, 200, 0, 0.2)';
+  ctx.strokeStyle = 'rgba(255, 200, 0, 0.6)';
+  ctx.lineWidth = 1.5;
+  rRect(10, 60, GW - 20, 38, 10, true, true);
+  ctx.font = 'bold 16px Arial';
+  ctx.fillStyle = '#FFD700';
+  ctx.fillText(`🪙 所持コイン：${totalCoins.toLocaleString()} 枚`, GW / 2, 79);
+
+  // Item list
+  SHOP_ITEMS.forEach((item, i) => {
+    const ry = SHOP_ITEM_START_Y + i * SHOP_ROW_H;
+    const owned = isItemOwned(item.id);
+    const canBuy = canBuyItem(item.id);
+
+    // Row background
+    const rowAlpha = owned ? 0.12 : (canBuy ? 0.22 : 0.1);
+    ctx.fillStyle = owned ? 'rgba(100,255,100,0.1)' : `rgba(100,100,200,${rowAlpha})`;
+    ctx.strokeStyle = owned ? 'rgba(100,255,100,0.4)' : (canBuy ? 'rgba(180,180,255,0.5)' : 'rgba(100,100,100,0.3)');
+    ctx.lineWidth = 1.5;
+    rRect(8, ry, GW - 16, SHOP_ROW_H - 4, 10, true, true);
+
+    // Emoji
+    ctx.font = '28px Arial';
+    ctx.textAlign = 'center';
+    ctx.textBaseline = 'middle';
+    ctx.globalAlpha = owned ? 0.5 : 1;
+    ctx.fillText(item.emoji, 38, ry + 22);
+    ctx.globalAlpha = 1;
+
+    // Item name
+    ctx.font = 'bold 13px Arial';
+    ctx.fillStyle = owned ? '#88FF88' : '#FFFFFF';
+    ctx.textAlign = 'left';
+    ctx.textBaseline = 'alphabetic';
+    ctx.fillText(item.name, 64, ry + 22);
+
+    // Description
+    ctx.font = '10px Arial';
+    ctx.fillStyle = owned ? '#88CC88' : '#CCCCCC';
+    ctx.fillText(item.desc, 64, ry + 38);
+
+    // Price
+    ctx.font = 'bold 12px Arial';
+    ctx.fillStyle = canBuy ? '#FFD700' : (owned ? '#66AA66' : '#888888');
+    ctx.fillText(`🪙 ${item.price.toLocaleString()}`, 64, ry + 54);
+
+    // Buy button
+    const btnX = GW - 92;
+    const btnY = ry + 14;
+    const btnW = 78;
+    const btnH = 44;
+
+    if (owned) {
+      ctx.fillStyle = 'rgba(100,200,100,0.3)';
+      ctx.strokeStyle = 'rgba(100,200,100,0.5)';
+      ctx.lineWidth = 1;
+      rRect(btnX, btnY, btnW, btnH, 8, true, true);
+      ctx.font = 'bold 11px Arial';
+      ctx.fillStyle = '#88FF88';
+      ctx.textAlign = 'center';
+      ctx.textBaseline = 'middle';
+      ctx.fillText('購入済み✓', btnX + btnW / 2, btnY + btnH / 2);
+    } else if (canBuy) {
+      const grad = ctx.createLinearGradient(btnX, btnY, btnX, btnY + btnH);
+      grad.addColorStop(0, '#E74C3C');
+      grad.addColorStop(1, '#C0392B');
+      ctx.fillStyle = grad;
+      ctx.strokeStyle = '#FFD700';
+      ctx.lineWidth = 2;
+      rRect(btnX, btnY, btnW, btnH, 8, true, true);
+      ctx.font = 'bold 14px Arial';
+      ctx.fillStyle = '#FFFFFF';
+      ctx.textAlign = 'center';
+      ctx.textBaseline = 'middle';
+      ctx.fillText('購入！', btnX + btnW / 2, btnY + btnH / 2);
+    } else {
+      ctx.fillStyle = 'rgba(80,80,80,0.4)';
+      ctx.strokeStyle = 'rgba(120,120,120,0.3)';
+      ctx.lineWidth = 1;
+      rRect(btnX, btnY, btnW, btnH, 8, true, true);
+      ctx.font = 'bold 11px Arial';
+      ctx.fillStyle = '#888888';
+      ctx.textAlign = 'center';
+      ctx.textBaseline = 'middle';
+      ctx.fillText(totalCoins < item.price ? 'コイン不足' : '条件外', btnX + btnW / 2, btnY + btnH / 2);
+    }
+  });
+
+  // Back button
+  const backY = SHOP_ITEM_START_Y + SHOP_ITEMS.length * SHOP_ROW_H + 6;
+  ctx.fillStyle = 'rgba(100,100,150,0.5)';
+  ctx.strokeStyle = 'rgba(180,180,255,0.6)';
+  ctx.lineWidth = 2;
+  rRect(GW / 2 - 90, backY, 180, 42, 21, true, true);
+  ctx.font = 'bold 16px Arial';
+  ctx.fillStyle = '#FFFFFF';
+  ctx.textAlign = 'center';
+  ctx.textBaseline = 'middle';
+  ctx.fillText('◀ タイトルに戻る', GW / 2, backY + 21);
+
+  frameCount++;
+}
+
+// =====================================================
+//  GAME OVER / WIN SCREEN
+// =====================================================
+function drawEndScreen(win) {
+  ctx.fillStyle = 'rgba(0,0,0,0.82)';
+  ctx.fillRect(0, 0, GW, GH);
+
+  const panelY = 90;
+  const panelH = 430;
+
+  ctx.fillStyle   = win ? 'rgba(0,80,0,0.85)' : 'rgba(100,0,0,0.85)';
+  ctx.strokeStyle = win ? '#FFD700' : '#FF4444';
+  ctx.lineWidth   = 3;
+  rRect(28, panelY, GW - 56, panelH, 20, true, true);
+
+  ctx.font = '62px Arial'; ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
+  ctx.fillText(win ? '🎉' : '😭', GW / 2, panelY + 64);
+
+  ctx.font         = 'bold 28px Arial';
+  ctx.strokeStyle  = '#000';
+  ctx.lineWidth    = 4;
+  ctx.fillStyle    = win ? '#FFD700' : '#FF4444';
+  ctx.textBaseline = 'alphabetic';
+  const title = win ? 'クリア！！' : 'ゲームオーバー';
+  ctx.strokeText(title, GW / 2, panelY + 125);
+  ctx.fillText  (title, GW / 2, panelY + 125);
+
+  ctx.font      = '14px Arial';
+  ctx.fillStyle = '#FFFFFF';
+  ctx.strokeStyle = 'transparent';
+  ctx.fillText(
+    win ? '🏆 お母さんから逃げきった！' : '💦 お母さんに見つかった…',
+    GW / 2, panelY + 152
+  );
+
+  // コイン獲得表示
+  ctx.fillStyle = 'rgba(255,200,0,0.15)';
+  ctx.strokeStyle = 'rgba(255,200,0,0.4)';
+  ctx.lineWidth = 1;
+  rRect(GW / 2 - 105, panelY + 162, 210, 50, 10, true, true);
+  ctx.font = 'bold 15px Arial';
+  ctx.fillStyle = '#FFD700';
+  ctx.fillText(`今回獲得 🪙 +${sessionEarnedCoins}枚`, GW / 2, panelY + 181);
+  ctx.font = '12px Arial';
+  ctx.fillStyle = '#FFE080';
+  ctx.fillText(`累計コイン 🪙 ${totalCoins.toLocaleString()}枚`, GW / 2, panelY + 200);
+
+  ctx.font      = '13px Arial';
+  ctx.fillStyle = '#CCCCCC';
+  ctx.fillText(`スコア: ${score} pts　コイン収集: ${itemsCollected}個`, GW / 2, panelY + 228);
+
+  const modeName = selectedMode === MODE.SURVIVAL ? 'サバイバル' : '収集';
+  const diffName = difficulty === 'easy' ? 'やさしい' : (difficulty === 'normal' ? 'ふつう' : 'むずかしい');
+  ctx.font      = '11px Arial';
+  ctx.fillStyle = '#AAAAAA';
+  ctx.fillText(`モード: ${modeName}  難易度: ${diffName}`, GW / 2, panelY + 248);
+
+  // Retry button
+  ctx.fillStyle   = '#FF6600';
+  ctx.strokeStyle = '#FFD700';
+  ctx.lineWidth   = 2;
+  rRect(GW / 2 - 100, panelY + 265, 200, 50, 25, true, true);
+  ctx.fillStyle    = '#FFF';
+  ctx.font         = 'bold 19px Arial';
+  ctx.textBaseline = 'middle';
+  ctx.fillText('🔄 もう一度！', GW / 2, panelY + 290);
+
+  // Shop button
+  ctx.fillStyle   = 'rgba(142,68,173,0.8)';
+  ctx.strokeStyle = '#DDA0FF';
+  ctx.lineWidth   = 2;
+  rRect(GW / 2 - 100, panelY + 324, 200, 44, 22, true, true);
+  ctx.fillStyle    = '#FFF';
+  ctx.font         = 'bold 15px Arial';
+  ctx.fillText('🛒 ショップへ', GW / 2, panelY + 346);
+
+  // Back to title
+  ctx.fillStyle    = 'rgba(255,255,255,0.5)';
+  ctx.font         = '13px Arial';
+  ctx.textBaseline = 'alphabetic';
+  ctx.fillText('[ タイトルに戻る ]', GW / 2, panelY + 396);
+
+  frameCount++;
+}
+
+// =====================================================
+//  CLICK / TAP HANDLER
+// =====================================================
+function handlePointer(x, y) {
+  if (gameState === STATE.START) {
+    // Mode buttons (y: 256-311)
+    if (y >= 256 && y <= 311) {
+      if (x >= 22  && x <= 170) selectedMode = MODE.SURVIVAL;
+      if (x >= 190 && x <= 338) selectedMode = MODE.COLLECTION;
+    }
+    // Difficulty buttons (y: 340-405)
+    const dW = (GW - 54) / 3;
+    if (y >= 340 && y <= 405) {
+      const diffs = ['easy','normal','hard'];
+      diffs.forEach((d, i) => {
+        const bx = 18 + i * (dW + 9);
+        if (x >= bx && x <= bx + dW) difficulty = d;
+      });
+    }
+    // Start button (y: 454-506)
+    if (x >= GW / 2 - 88 && x <= GW / 2 + 88 && y >= 454 && y <= 506) {
+      beginGame();
+    }
+    // Shop button (y: 515-555)
+    if (x >= GW / 2 - 80 && x <= GW / 2 + 80 && y >= 515 && y <= 555) {
+      gameState = STATE.SHOP;
+    }
+
+  } else if (gameState === STATE.SHOP) {
+    // Item buy buttons
+    SHOP_ITEMS.forEach((item, i) => {
+      const ry = SHOP_ITEM_START_Y + i * SHOP_ROW_H;
+      const btnX = GW - 92;
+      const btnY = ry + 14;
+      if (x >= btnX && x <= btnX + 78 && y >= btnY && y <= btnY + 44) {
+        buyItem(item.id);
+        if (audioCtx) SFX.buy();
+      }
+    });
+    // Back button
+    const backY = SHOP_ITEM_START_Y + SHOP_ITEMS.length * SHOP_ROW_H + 6;
+    if (y >= backY && y <= backY + 42 && x >= GW / 2 - 90 && x <= GW / 2 + 90) {
+      gameState = STATE.START;
+    }
+
+  } else if (gameState === STATE.GAMEOVER || gameState === STATE.WIN) {
+    const panelY = 90;
+    // Retry (y: panelY+265 ~ panelY+315)
+    if (x >= GW / 2 - 100 && x <= GW / 2 + 100 && y >= panelY + 265 && y <= panelY + 315) {
+      beginGame();
+    }
+    // Shop (y: panelY+324 ~ panelY+368)
+    if (x >= GW / 2 - 100 && x <= GW / 2 + 100 && y >= panelY + 324 && y <= panelY + 368) {
+      gameState = STATE.SHOP;
+    }
+    // Title (y: panelY+378 ~ panelY+405)
+    if (y >= panelY + 378 && y <= panelY + 408) {
+      gameState = STATE.START;
+    }
+  }
+}
+
+// =====================================================
+//  MAIN LOOP
+// =====================================================
+function loop() {
+  if (gameState === STATE.START) {
+    drawStartScreen();
+  } else if (gameState === STATE.PLAYING) {
+    update();
+    draw();
+  } else if (gameState === STATE.GAMEOVER || gameState === STATE.WIN) {
+    drawEndScreen(gameState === STATE.WIN);
+  } else if (gameState === STATE.SHOP) {
+    drawShopScreen();
+  }
+  animId = requestAnimationFrame(loop);
+}
+
+function beginGame() {
+  if (!audioCtx) initAudio();
+  isMobile = ('ontouchstart' in window) || navigator.maxTouchPoints > 0;
+  if (isMobile) {
+    skillBtn.style.display = 'flex';
+  }
+  initGame();
+  gameState = STATE.PLAYING;
+}
+
+// =====================================================
+//  EVENTS
+// =====================================================
+document.addEventListener('keydown', e => {
+  keys[e.key] = true;
+  if (!audioCtx) initAudio();
+  if (gameState === STATE.PLAYING) {
+    if (e.key === 'Shift') { activateSkill(); e.preventDefault(); }
+    if (e.key === ' ')     { e.preventDefault(); }
+  }
+  if (['ArrowUp','ArrowDown','ArrowLeft','ArrowRight',' '].includes(e.key)) e.preventDefault();
+});
+document.addEventListener('keyup', e => { keys[e.key] = false; });
+
+canvas.addEventListener('mousemove', e => {
+  const r  = canvas.getBoundingClientRect();
+  mousePos.x = (e.clientX - r.left) * (GW / r.width);
+  mousePos.y = (e.clientY - r.top)  * (GH / r.height);
+});
+
+canvas.addEventListener('click', e => {
+  if (!audioCtx) initAudio();
+  const r = canvas.getBoundingClientRect();
+  const x = (e.clientX - r.left) * (GW / r.width);
+  const y = (e.clientY - r.top)  * (GH / r.height);
+  handlePointer(x, y);
+});
+
+function canvasPos(touch) {
+  const r = canvas.getBoundingClientRect();
+  return {
+    x: (touch.clientX - r.left) * (GW / r.width),
+    y: (touch.clientY - r.top)  * (GH / r.height)
+  };
+}
+
+canvas.addEventListener('touchstart', e => {
+  e.preventDefault();
+  if (!audioCtx) initAudio();
+
+  for (const t of e.changedTouches) {
+    const pos = canvasPos(t);
+
+    if (gameState !== STATE.PLAYING) {
+      handlePointer(pos.x, pos.y);
+      continue;
+    }
+
+    if (!joystick.active && pos.y > GH * 0.45 && pos.x < GW * 0.65) {
+      joystick.active = true;
+      joystick.startX = pos.x; joystick.startY = pos.y;
+      joystick.baseX  = pos.x; joystick.baseY  = pos.y;
+      joystick.dx = 0; joystick.dy = 0;
+      joystick.id = t.identifier;
+    }
+  }
+}, { passive: false });
+
+canvas.addEventListener('touchmove', e => {
+  e.preventDefault();
+  for (const t of e.changedTouches) {
+    if (t.identifier === joystick.id) {
+      const pos = canvasPos(t);
+      joystick.dx = pos.x - joystick.startX;
+      joystick.dy = pos.y - joystick.startY;
+    }
+  }
+}, { passive: false });
+
+canvas.addEventListener('touchend', e => {
+  e.preventDefault();
+  for (const t of e.changedTouches) {
+    if (t.identifier === joystick.id) {
+      joystick.active = false;
+      joystick.dx = 0; joystick.dy = 0;
+      joystick.id = null;
+    }
+  }
+}, { passive: false });
+
+skillBtn.addEventListener('touchstart', e => {
+  e.preventDefault(); e.stopPropagation();
+  activateSkill();
+}, { passive: false });
+skillBtn.addEventListener('click', e => {
+  e.stopPropagation();
+  activateSkill();
+});
+
+// =====================================================
+//  BOOT
+// =====================================================
+frameCount = 0;
+loop();
+</script>
+</body>
+</html>
