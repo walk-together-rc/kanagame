@@ -369,7 +369,7 @@ function initGame() {
   score          = 0;
   itemsCollected = 0;
   sessionEarnedCoins = 0;
-  timeLeft       = selectedMode === MODE.SURVIVAL ? 60 : 120;
+  timeLeft       = selectedMode === MODE.SURVIVAL ? 30 : 60;
 
   skillCooldown = 0;
   skillEffect   = null;
@@ -565,7 +565,10 @@ function updateObstacles() {
     ob.wobble += ob.wobbleSpeed;
 
     if (ob.tracking) {
-      const ang = Math.atan2(player.y - ob.y, player.x - ob.x);
+      // 追跡：プレイヤーへ向かうが、個体ごとの固有オフセット(wobble)で
+      // 少しずつ角度がずれるため、同じ場所に固まりにくい
+      const ang = Math.atan2(player.y - ob.y, player.x - ob.x)
+                  + Math.sin(ob.wobble * 0.5) * 0.35; // ±20°程度のばらつき
       ob.vx += Math.cos(ang) * 0.18;
       ob.vy += Math.sin(ang) * 0.18;
       const sp = Math.hypot(ob.vx, ob.vy);
@@ -599,6 +602,31 @@ function updateObstacles() {
         const a = Math.atan2(ob.y - player.y, ob.x - player.x);
         ob.vx = Math.cos(a) * 4;
         ob.vy = Math.sin(a) * 4;
+      }
+    }
+  }
+
+  // ===== 障害物どうしの分散（相互反発力） =====
+  // 近づきすぎた障害物ペアを押し離す。強さを抑えて逃げ道をふさがないようにする。
+  if (!stopped) {
+    for (let i = 0; i < obstacles.length; i++) {
+      for (let j = i + 1; j < obstacles.length; j++) {
+        const a = obstacles[i], b = obstacles[j];
+        const dx = a.x - b.x, dy = a.y - b.y;
+        const d  = Math.hypot(dx, dy);
+        const minD = a.r + b.r + 28; // 最低限の間隔（px）
+        if (d < minD && d > 0.5) {
+          // 反発強度：近いほど強く、ただし上限あり
+          const push = Math.min((minD - d) / minD * 0.9, 0.6);
+          const nx = dx / d, ny = dy / d;
+          a.vx += nx * push; a.vy += ny * push;
+          b.vx -= nx * push; b.vy -= ny * push;
+          // 速度が上がりすぎないようにクランプ
+          const capA = a.speed * 2.0, capB = b.speed * 2.0;
+          const spA = Math.hypot(a.vx, a.vy), spB = Math.hypot(b.vx, b.vy);
+          if (spA > capA) { a.vx = a.vx / spA * capA; a.vy = a.vy / spA * capA; }
+          if (spB > capB) { b.vx = b.vx / spB * capB; b.vy = b.vy / spB * capB; }
+        }
       }
     }
   }
@@ -923,20 +951,60 @@ function drawItems() {
   for (const item of items) {
     const bob   = Math.sin(item.bob) * 4;
     const pulse = 0.75 + Math.sin(item.bob * 2) * 0.25;
+    const cy    = item.y + bob;
 
     ctx.save();
     ctx.globalAlpha = pulse;
 
+    // 外枠グロー
     ctx.strokeStyle = item.type === 'coin' ? '#FFD700' : '#FF6B6B';
     ctx.lineWidth   = 2;
     ctx.globalAlpha = 0.4 * pulse;
-    ctx.beginPath(); ctx.arc(item.x, item.y + bob, item.r + 6, 0, Math.PI * 2); ctx.stroke();
+    ctx.beginPath(); ctx.arc(item.x, cy, item.r + 6, 0, Math.PI * 2); ctx.stroke();
 
     ctx.globalAlpha = pulse;
-    ctx.font = '26px Arial';
-    ctx.textAlign    = 'center';
-    ctx.textBaseline = 'middle';
-    ctx.fillText(item.type === 'coin' ? '🪙' : '🍖', item.x, item.y + bob);
+
+    if (item.type === 'coin') {
+      // --- 金色コイン（カスタム描画） ---
+      const r = item.r;       // 通常 12px 程度
+      // 外側の円（金色グラデーション）
+      const grad = ctx.createRadialGradient(item.x - r * 0.3, cy - r * 0.3, r * 0.1,
+                                             item.x, cy, r);
+      grad.addColorStop(0,   '#FFF176'); // ハイライト
+      grad.addColorStop(0.4, '#FFD700'); // 金色
+      grad.addColorStop(0.8, '#FFA000'); // 影側
+      grad.addColorStop(1,   '#E65100'); // 縁
+
+      ctx.beginPath();
+      ctx.arc(item.x, cy, r, 0, Math.PI * 2);
+      ctx.fillStyle = grad;
+      ctx.fill();
+
+      // 縁取り
+      ctx.strokeStyle = '#B8860B';
+      ctx.lineWidth   = 1.5;
+      ctx.stroke();
+
+      // 中央の「¥」または「$」マーク
+      ctx.fillStyle    = '#7A4F00';
+      ctx.font         = `bold ${Math.round(r * 1.1)}px Arial`;
+      ctx.textAlign    = 'center';
+      ctx.textBaseline = 'middle';
+      ctx.fillText('¥', item.x, cy + 1);
+
+      // 内側リング
+      ctx.beginPath();
+      ctx.arc(item.x, cy, r * 0.72, 0, Math.PI * 2);
+      ctx.strokeStyle = 'rgba(180,120,0,0.5)';
+      ctx.lineWidth   = 1;
+      ctx.stroke();
+    } else {
+      // 肉はそのまま絵文字
+      ctx.font = '26px Arial';
+      ctx.textAlign    = 'center';
+      ctx.textBaseline = 'middle';
+      ctx.fillText('🍖', item.x, cy);
+    }
 
     ctx.restore();
   }
@@ -1220,9 +1288,6 @@ function drawStartScreen() {
   ctx.lineWidth   = 2;
   rRect(18, 52, GW - 36, 182, 18, true, true);
 
-  ctx.font = '60px Arial'; ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
-  ctx.fillText('👩‍🦱⚡😱', GW / 2, 132);
-
   ctx.font         = 'bold 19px Arial';
   ctx.textBaseline = 'alphabetic';
   ctx.fillStyle    = '#FFD700';
@@ -1257,7 +1322,7 @@ function drawStartScreen() {
   ctx.fillText('⏱ サバイバル', 96, 278);
   ctx.font      = '11px Arial';
   ctx.fillStyle = '#FFE8CC';
-  ctx.fillText('60秒生き残れ！', 96, 298);
+  ctx.fillText('30秒生き残れ！', 96, 298);
 
   ctx.fillStyle   = m2sel ? '#27AE60' : 'rgba(39,174,96,0.3)';
   ctx.strokeStyle = m2sel ? '#FFD700' : 'rgba(255,215,0,0.4)';
@@ -1268,7 +1333,7 @@ function drawStartScreen() {
   ctx.fillText('🪙 収集', 264, 278);
   ctx.font      = '11px Arial';
   ctx.fillStyle = '#CCFFCC';
-  ctx.fillText('120秒でコイン10個！', 264, 298);
+  ctx.fillText('60秒でコイン10個！', 264, 298);
 
   // ==============================
   // Difficulty
@@ -1340,6 +1405,18 @@ function drawStartScreen() {
   ctx.textBaseline = 'alphabetic';
   ctx.fillText('PC: WASD / 矢印キー で移動　Shift: 言い訳スキル', GW / 2, 590);
   ctx.fillText('スマホ: 左タッチでスティック操作', GW / 2, 606);
+
+  // ==============================
+  // イラスト（最前面に描画：他の要素に埋もれないよう最後に描く）
+  // ==============================
+  const ilBob = Math.sin(frameCount * 0.07) * 5; // ふわふわアニメーション
+  ctx.save();
+  ctx.font = '58px Arial';
+  ctx.textAlign    = 'center';
+  ctx.textBaseline = 'middle';
+  ctx.globalAlpha  = 1;
+  ctx.fillText('👩‍🦱⚡😱', GW / 2, 128 + ilBob);
+  ctx.restore();
 
   frameCount++;
 }
